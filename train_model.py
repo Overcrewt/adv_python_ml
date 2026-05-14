@@ -106,34 +106,72 @@ print(y_test.value_counts())
 # ==============================================================
 # YOUR WORK STARTS HERE
 # ==============================================================
+import os
+import datetime
+from sklearn.model_selection import GridSearchCV
 
 print("\n" + "="*60)
-print("5. MODEL TRAINING AND EVALUATION")
+print("5. MODEL TRAINING AND HYPERPARAMETER TUNING")
 print("="*60 + "\n")
 
-# To handle class imbalance, we use a RandomForestClassifier with class_weight='balanced'
-print("Initializing Random Forest Classifier with class_weight='balanced'...")
-model = RandomForestClassifier(n_estimators=150, class_weight='balanced', random_state=42, n_jobs=-1)
+run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# Perform 5-fold cross-validation on the training set using Macro F1-score
-print("\nPerforming 5-fold cross-validation (this may take a few minutes)...")
-cv_scores = cross_val_score(model, X_train, y_train, cv=5, scoring='f1_macro', n_jobs=-1)
-print(f"Cross-validation macro F1: {cv_scores.mean():.4f} (± {cv_scores.std():.4f})")
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
 
-# Train the model on the entire training set
-print("\nTraining the final model on the entire training set...")
-model.fit(X_train, y_train)
+# SVM requires feature scaling for optimal performance and convergence.
+print("Scaling features using StandardScaler...")
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# Initialize the model and parameter grid
+# Note: SVM on 125,000 samples can be extremely slow. 
+# We use cache_size=2000 to allocate 2GB of RAM for the kernel cache to speed it up.
+svm = SVC(random_state=42, class_weight='balanced', cache_size=2000)
+
+param_grid = {
+    'C': [0.1, 1, 10],
+    'gamma': ['scale', 'auto'],
+    'kernel': ['rbf'] # 'linear' is omitted as it takes a very long time in SVC. Consider LinearSVC instead for purely linear kernels.
+}
+
+print("Initializing GridSearchCV with the following parameter grid:")
+for k, v in param_grid.items():
+    print(f"  {k}: {v}")
+
+# 3-fold CV is usually faster for a large dataset, but 5-fold is standard.
+# We'll use 3 to save time but you can increase it.
+grid_search = GridSearchCV(
+    estimator=svm,
+    param_grid=param_grid,
+    cv=3,
+    scoring='f1_macro',
+    n_jobs=-1,
+    verbose=2
+)
+
+print("\nStarting Grid Search (this may take a while, SVM on large datasets is slow)...")
+grid_search.fit(X_train_scaled, y_train)
+
+best_model = grid_search.best_estimator_
+best_params = grid_search.best_params_
+best_cv_score = grid_search.best_score_
+
+print(f"\nBest Parameters Found: {best_params}")
+print(f"Best Cross-Validation Macro F1: {best_cv_score:.4f}")
 
 # Predict on the test set
-print("Evaluating on the test set...")
-y_pred = model.predict(X_test)
+print("\nEvaluating the best model on the test set...")
+y_pred = best_model.predict(X_test_scaled)
 
-# Evaluate using Macro F1-score
 final_macro_f1 = f1_score(y_test, y_pred, average='macro')
 print(f"\nFinal Test Macro F1-score: {final_macro_f1:.4f}")
 
+clf_report_text = classification_report(y_test, y_pred)
+clf_report_dict = classification_report(y_test, y_pred, output_dict=True)
 print("\nClassification Report:")
-print(classification_report(y_test, y_pred))
+print(clf_report_text)
 
 # ==============================================================
 # 6. CONFUSION MATRIX PLOT
@@ -150,7 +188,54 @@ sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
             xticklabels=labels, yticklabels=labels)
 plt.xlabel("Predicted")
 plt.ylabel("Actual")
-plt.title("Confusion Matrix (Random Forest with Balanced Weights)")
+plt.title("Confusion Matrix (Best Model)")
 plt.tight_layout()
-plt.savefig("confusion_matrix.png", dpi=150)
-print("Confusion matrix saved as 'confusion_matrix.png'.")
+cm_filename = f"confusion_matrix_{run_timestamp}.png"
+plt.savefig(cm_filename, dpi=150)
+print(f"Confusion matrix saved as '{cm_filename}'.")
+
+# ==============================================================
+# 7. GENERATE MARKDOWN REPORT
+# ==============================================================
+print("\nGenerating markdown report...")
+report_filename = "model_evaluation_report.md"
+
+md_content = f"## Run Details: {run_timestamp}\n\n"
+md_content += "**Model:** SVC\n\n"
+
+md_content += "### Best Hyperparameters\n\n"
+md_content += "| Parameter | Value |\n| :--- | :--- |\n"
+for k, v in best_params.items():
+    md_content += f"| `{k}` | `{v}` |\n"
+md_content += "\n"
+
+md_content += "### Performance Metrics\n\n"
+md_content += f"- **Cross-Validation Macro F1-score:** `{best_cv_score:.4f}`\n"
+md_content += f"- **Test Set Macro F1-score:** `{final_macro_f1:.4f}`\n\n"
+
+md_content += "### Test Set Classification Report\n\n"
+md_content += "| Class | Precision | Recall | F1-Score | Support |\n"
+md_content += "| :--- | :--- | :--- | :--- | :--- |\n"
+for target_class in labels:
+    if target_class in clf_report_dict:
+        metrics = clf_report_dict[target_class]
+        md_content += f"| {target_class} | {metrics['precision']:.4f} | {metrics['recall']:.4f} | {metrics['f1-score']:.4f} | {metrics['support']:.0f} |\n"
+
+macro_avg = clf_report_dict.get('macro avg', {})
+if macro_avg:
+    md_content += f"| **Macro Avg** | **{macro_avg['precision']:.4f}** | **{macro_avg['recall']:.4f}** | **{macro_avg['f1-score']:.4f}** | **{macro_avg['support']:.0f}** |\n"
+weighted_avg = clf_report_dict.get('weighted avg', {})
+if weighted_avg:
+    md_content += f"| **Weighted Avg** | **{weighted_avg['precision']:.4f}** | **{weighted_avg['recall']:.4f}** | **{weighted_avg['f1-score']:.4f}** | **{weighted_avg['support']:.0f}** |\n\n"
+
+md_content += "### Confusion Matrix\n\n"
+md_content += f"![Confusion Matrix]({cm_filename})\n\n"
+md_content += "---\n\n"
+
+is_new_file = not os.path.exists(report_filename)
+with open(report_filename, "a") as f:
+    if is_new_file:
+        f.write("# Network Intrusion Detection Model Evaluation Report\n\n")
+    f.write(md_content)
+
+print(f"Report appended to {report_filename}\n")
