@@ -1,6 +1,6 @@
 pandas
+numpy
 scikit-learn
-xgboost
-lightgbm
 matplotlib
 seaborn
+imbalanced-learn

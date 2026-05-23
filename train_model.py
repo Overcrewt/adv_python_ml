@@ -1,241 +1,320 @@
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_val_score
-from sklearn.metrics import classification_report, confusion_matrix, f1_score
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.pipeline import Pipeline
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import classification_report, f1_score, confusion_matrix
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.preprocessing import LabelEncoder
+
+
+RANDOM_STATE = 42
+
+LABELS = ["No Failure", "HDF", "OSF", "PWF", "TWF", "RNF"]
+
 
 # ==============================================================
 # 1. LOAD DATA
 # ==============================================================
 
-train_url = "https://raw.githubusercontent.com/defcom17/NSL_KDD/master/KDDTrain%2B.txt"
-test_url = "https://raw.githubusercontent.com/defcom17/NSL_KDD/master/KDDTest%2B.txt"
+df = pd.read_csv("ai4i2020.csv")
 
-columns = [
-    'duration', 'protocol_type', 'service', 'flag', 'src_bytes', 'dst_bytes',
-    'land', 'wrong_fragment', 'urgent', 'hot', 'num_failed_logins', 'logged_in',
-    'num_compromised', 'root_shell', 'su_attempted', 'num_root', 'num_file_creations',
-    'num_shells', 'num_access_files', 'num_outbound_cmds', 'is_host_login',
-    'is_guest_login', 'count', 'srv_count', 'serror_rate', 'srv_serror_rate',
-    'rerror_rate', 'srv_rerror_rate', 'same_srv_rate', 'diff_srv_rate',
-    'srv_diff_host_rate', 'dst_host_count', 'dst_host_srv_count',
-    'dst_host_same_srv_rate', 'dst_host_diff_srv_rate',
-    'dst_host_same_src_port_rate', 'dst_host_srv_diff_host_rate',
-    'dst_host_serror_rate', 'dst_host_srv_serror_rate', 'dst_host_rerror_rate',
-    'dst_host_srv_rerror_rate', 'class', 'level'
+print(f"Dataset: {df.shape[0]} records, {df.shape[1]} columns")
+print("\nColumns:")
+print(df.columns)
+
+
+# ==============================================================
+# 2. CREATE MULTI-CLASS TARGET
+# ==============================================================
+
+def get_failure_type(row):
+    if row["TWF"] == 1:
+        return "TWF"
+    elif row["HDF"] == 1:
+        return "HDF"
+    elif row["PWF"] == 1:
+        return "PWF"
+    elif row["OSF"] == 1:
+        return "OSF"
+    elif row["RNF"] == 1:
+        return "RNF"
+    else:
+        return "No Failure"
+
+
+df["fault_type"] = df.apply(get_failure_type, axis=1)
+
+print("\nClass distribution:")
+print(df["fault_type"].value_counts())
+
+
+# ==============================================================
+# 3. PREPARE FEATURES
+# ==============================================================
+
+drop_cols = [
+    "UDI",
+    "Product ID",
+    "Machine failure",
+    "TWF",
+    "HDF",
+    "PWF",
+    "OSF",
+    "RNF",
+    "fault_type",
 ]
 
-print("Loading data...")
-df_train = pd.read_csv(train_url, names=columns)
-df_test = pd.read_csv(test_url, names=columns)
+X_original = df.drop(columns=drop_cols)
+y = df["fault_type"]
 
-# Drop difficulty level column (not a feature)
-df_train.drop(columns=['level'], inplace=True)
-df_test.drop(columns=['level'], inplace=True)
+# Encode Type column: L, M, H -> numbers
+le = LabelEncoder()
+X_original["Type"] = le.fit_transform(X_original["Type"])
 
-print(f"Training set: {df_train.shape[0]} records, {df_train.shape[1]} columns")
-print(f"Test set:     {df_test.shape[0]} records, {df_test.shape[1]} columns")
 
 # ==============================================================
-# 2. ENCODE CATEGORICAL FEATURES
+# 4. FEATURE ENGINEERING
 # ==============================================================
 
-# Merge temporarily to ensure consistent encoding across train and test
-df_full = pd.concat([df_train, df_test])
+X_engineered = X_original.copy()
 
-# Encode categorical columns as integers
-cat_cols = ['protocol_type', 'service', 'flag']
-label_encoders = {}
-
-for col in cat_cols:
-    le = LabelEncoder()
-    df_full[col] = le.fit_transform(df_full[col])
-    label_encoders[col] = le
-
-# ==============================================================
-# 3. MAP ATTACKS TO 5 CATEGORIES
-# ==============================================================
-
-category_map = {
-    'normal': 'Normal',
-    # DoS
-    'neptune': 'DoS', 'back': 'DoS', 'land': 'DoS', 'pod': 'DoS',
-    'smurf': 'DoS', 'teardrop': 'DoS', 'mailbomb': 'DoS', 'apache2': 'DoS',
-    'processtable': 'DoS', 'udpstorm': 'DoS', 'worm': 'DoS',
-    # Probe
-    'satan': 'Probe', 'ipsweep': 'Probe', 'nmap': 'Probe', 'portsweep': 'Probe',
-    'mscan': 'Probe', 'saint': 'Probe',
-    # R2L
-    'warezclient': 'R2L', 'guess_passwd': 'R2L', 'ftp_write': 'R2L',
-    'imap': 'R2L', 'phf': 'R2L', 'multihop': 'R2L', 'warezmaster': 'R2L',
-    'spy': 'R2L', 'xlock': 'R2L', 'xsnoop': 'R2L', 'snmpguess': 'R2L',
-    'snmpgetattack': 'R2L', 'httptunnel': 'R2L', 'sendmail': 'R2L', 'named': 'R2L',
-    # U2R
-    'buffer_overflow': 'U2R', 'loadmodule': 'U2R', 'rootkit': 'U2R',
-    'perl': 'U2R', 'sqlattack': 'U2R', 'xterm': 'U2R', 'ps': 'U2R'
-}
-
-df_full['category'] = df_full['class'].map(category_map).fillna('Other')
-
-# ==============================================================
-# 4. PREPARE FEATURES AND LABELS
-# ==============================================================
-
-# Drop constant column and original class labels
-df_full.drop(columns=['num_outbound_cmds', 'class'], inplace=True)
-
-# Split back into train and test
-train_len = len(df_train)
-df_train_processed = df_full.iloc[:train_len].copy()
-df_test_processed = df_full.iloc[train_len:].copy()
-
-X_train = df_train_processed.drop(columns=['category'])
-y_train = df_train_processed['category']
-
-X_test = df_test_processed.drop(columns=['category'])
-y_test = df_test_processed['category']
-
-print(f"\nFeatures: {X_train.shape[1]}")
-print(f"\nTraining set class distribution:")
-print(y_train.value_counts())
-print(f"\nTest set class distribution:")
-print(y_test.value_counts())
-
-# ==============================================================
-# YOUR WORK STARTS HERE
-# ==============================================================
-import os
-import datetime
-from sklearn.model_selection import GridSearchCV
-
-print("\n" + "="*60)
-print("5. MODEL TRAINING AND HYPERPARAMETER TUNING")
-print("="*60 + "\n")
-
-run_timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
-
-# SVM requires feature scaling for optimal performance and convergence.
-print("Scaling features using StandardScaler...")
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-
-# Initialize the model and parameter grid
-# Note: SVM on 125,000 samples can be extremely slow. 
-# We use cache_size=2000 to allocate 2GB of RAM for the kernel cache to speed it up.
-svm = SVC(random_state=42, class_weight='balanced', cache_size=2000)
-
-param_grid = {
-    'C': [0.1, 1, 10],
-    'gamma': ['scale', 'auto'],
-    'kernel': ['rbf'] # 'linear' is omitted as it takes a very long time in SVC. Consider LinearSVC instead for purely linear kernels.
-}
-
-print("Initializing GridSearchCV with the following parameter grid:")
-for k, v in param_grid.items():
-    print(f"  {k}: {v}")
-
-# 3-fold CV is usually faster for a large dataset, but 5-fold is standard.
-# We'll use 3 to save time but you can increase it.
-grid_search = GridSearchCV(
-    estimator=svm,
-    param_grid=param_grid,
-    cv=3,
-    scoring='f1_macro',
-    n_jobs=-1,
-    verbose=2
+X_engineered["temperature_difference"] = (
+    X_engineered["Process temperature [K]"] - X_engineered["Air temperature [K]"]
 )
 
-print("\nStarting Grid Search (this may take a while, SVM on large datasets is slow)...")
-grid_search.fit(X_train_scaled, y_train)
+X_engineered["power"] = (
+    X_engineered["Rotational speed [rpm]"]
+    * X_engineered["Torque [Nm]"]
+    * 2
+    * np.pi
+    / 60
+)
 
-best_model = grid_search.best_estimator_
-best_params = grid_search.best_params_
-best_cv_score = grid_search.best_score_
+X_engineered["wear_torque"] = (
+    X_engineered["Tool wear [min]"] * X_engineered["Torque [Nm]"]
+)
 
-print(f"\nBest Parameters Found: {best_params}")
-print(f"Best Cross-Validation Macro F1: {best_cv_score:.4f}")
+X_engineered["temperature_ratio"] = (
+    X_engineered["Process temperature [K]"] / X_engineered["Air temperature [K]"]
+)
 
-# Predict on the test set
-print("\nEvaluating the best model on the test set...")
-y_pred = best_model.predict(X_test_scaled)
+print(f"\nOriginal features: {X_original.shape[1]}")
+print(f"Features after feature engineering: {X_engineered.shape[1]}")
 
-final_macro_f1 = f1_score(y_test, y_pred, average='macro')
-print(f"\nFinal Test Macro F1-score: {final_macro_f1:.4f}")
-
-clf_report_text = classification_report(y_test, y_pred)
-clf_report_dict = classification_report(y_test, y_pred, output_dict=True)
-print("\nClassification Report:")
-print(clf_report_text)
 
 # ==============================================================
-# 6. CONFUSION MATRIX PLOT
+# 5. TRAIN/TEST SPLIT
 # ==============================================================
 
-print("\nGenerating confusion matrix plot...")
-labels = ["DoS", "Normal", "Probe", "R2L", "U2R"]
+train_idx, test_idx = train_test_split(
+    df.index,
+    test_size=0.2,
+    random_state=RANDOM_STATE,
+    stratify=y,
+)
 
-# Ensure classes are in the desired order
-cm = confusion_matrix(y_test, y_pred, labels=labels)
+X_original_train = X_original.loc[train_idx]
+X_original_test = X_original.loc[test_idx]
 
-plt.figure(figsize=(8, 6))
-sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-            xticklabels=labels, yticklabels=labels)
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.title("Confusion Matrix (Best Model)")
-plt.tight_layout()
-cm_filename = f"confusion_matrix_{run_timestamp}.png"
-plt.savefig(cm_filename, dpi=150)
-print(f"Confusion matrix saved as '{cm_filename}'.")
+X_engineered_train = X_engineered.loc[train_idx]
+X_engineered_test = X_engineered.loc[test_idx]
+
+y_train = y.loc[train_idx]
+y_test = y.loc[test_idx]
+
+print(f"\nTraining set: {len(train_idx)} records")
+print(f"Test set:     {len(test_idx)} records")
+
+print("\nTraining class distribution:")
+print(y_train.value_counts())
+
+print("\nTest class distribution:")
+print(y_test.value_counts())
+
 
 # ==============================================================
-# 7. GENERATE MARKDOWN REPORT
+# 6. HELPER FUNCTIONS
 # ==============================================================
-print("\nGenerating markdown report...")
-report_filename = "model_evaluation_report.md"
 
-md_content = f"## Run Details: {run_timestamp}\n\n"
-md_content += "**Model:** SVC\n\n"
+def evaluate_model(name, model, X_train, X_test, y_train, y_test):
+    print("\n" + "=" * 70)
+    print(name)
+    print("=" * 70)
 
-md_content += "### Best Hyperparameters\n\n"
-md_content += "| Parameter | Value |\n| :--- | :--- |\n"
-for k, v in best_params.items():
-    md_content += f"| `{k}` | `{v}` |\n"
-md_content += "\n"
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
 
-md_content += "### Performance Metrics\n\n"
-md_content += f"- **Cross-Validation Macro F1-score:** `{best_cv_score:.4f}`\n"
-md_content += f"- **Test Set Macro F1-score:** `{final_macro_f1:.4f}`\n\n"
+    macro_f1 = f1_score(y_test, y_pred, average="macro")
 
-md_content += "### Test Set Classification Report\n\n"
-md_content += "| Class | Precision | Recall | F1-Score | Support |\n"
-md_content += "| :--- | :--- | :--- | :--- | :--- |\n"
-for target_class in labels:
-    if target_class in clf_report_dict:
-        metrics = clf_report_dict[target_class]
-        md_content += f"| {target_class} | {metrics['precision']:.4f} | {metrics['recall']:.4f} | {metrics['f1-score']:.4f} | {metrics['support']:.0f} |\n"
+    print(f"Macro F1-score: {macro_f1:.4f}")
+    print("\nClassification report:")
+    print(classification_report(y_test, y_pred, zero_division=0))
 
-macro_avg = clf_report_dict.get('macro avg', {})
-if macro_avg:
-    md_content += f"| **Macro Avg** | **{macro_avg['precision']:.4f}** | **{macro_avg['recall']:.4f}** | **{macro_avg['f1-score']:.4f}** | **{macro_avg['support']:.0f}** |\n"
-weighted_avg = clf_report_dict.get('weighted avg', {})
-if weighted_avg:
-    md_content += f"| **Weighted Avg** | **{weighted_avg['precision']:.4f}** | **{weighted_avg['recall']:.4f}** | **{weighted_avg['f1-score']:.4f}** | **{weighted_avg['support']:.0f}** |\n\n"
+    return {
+        "name": name,
+        "model": model,
+        "y_pred": y_pred,
+        "macro_f1": macro_f1,
+    }
 
-md_content += "### Confusion Matrix\n\n"
-md_content += f"![Confusion Matrix]({cm_filename})\n\n"
-md_content += "---\n\n"
 
-is_new_file = not os.path.exists(report_filename)
-with open(report_filename, "a") as f:
-    if is_new_file:
-        f.write("# Network Intrusion Detection Model Evaluation Report\n\n")
-    f.write(md_content)
+def save_confusion_matrix(y_test, y_pred, filename="confusion_matrix.png"):
+    cm = confusion_matrix(y_test, y_pred, labels=LABELS)
 
-print(f"Report appended to {report_filename}\n")
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=LABELS,
+        yticklabels=LABELS,
+    )
+
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title("Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150)
+    plt.close()
+
+    print(f"\nConfusion matrix saved as {filename}")
+
+
+# ==============================================================
+# 7. EXPERIMENT 1: BASELINE RANDOM FOREST
+# ==============================================================
+
+baseline_model = RandomForestClassifier(
+    n_estimators=200,
+    random_state=RANDOM_STATE,
+    class_weight="balanced",
+    n_jobs=-1,
+)
+
+baseline_result = evaluate_model(
+    "Experiment 1: Baseline Random Forest with original features",
+    baseline_model,
+    X_original_train,
+    X_original_test,
+    y_train,
+    y_test,
+)
+
+
+# ==============================================================
+# 8. EXPERIMENT 2: RANDOM FOREST + FEATURE ENGINEERING
+# ==============================================================
+
+feature_model = RandomForestClassifier(
+    n_estimators=200,
+    random_state=RANDOM_STATE,
+    class_weight="balanced",
+    n_jobs=-1,
+)
+
+feature_result = evaluate_model(
+    "Experiment 2: Random Forest with feature engineering",
+    feature_model,
+    X_engineered_train,
+    X_engineered_test,
+    y_train,
+    y_test,
+)
+
+
+# ==============================================================
+# 9. EXPERIMENT 3: FEATURE ENGINEERING + OVERSAMPLING
+# ==============================================================
+
+final_model = Pipeline([
+    ("oversampler", RandomOverSampler(random_state=RANDOM_STATE)),
+    ("classifier", RandomForestClassifier(
+        n_estimators=200,
+        random_state=RANDOM_STATE,
+        class_weight="balanced",
+        n_jobs=-1,
+    )),
+])
+
+final_result = evaluate_model(
+    "Experiment 3: Random Forest with feature engineering and oversampling",
+    final_model,
+    X_engineered_train,
+    X_engineered_test,
+    y_train,
+    y_test,
+)
+
+
+# ==============================================================
+# 10. CROSS-VALIDATION FOR FINAL MODEL
+# ==============================================================
+
+cv = StratifiedKFold(
+    n_splits=5,
+    shuffle=True,
+    random_state=RANDOM_STATE,
+)
+
+cv_scores = cross_val_score(
+    final_model,
+    X_engineered_train,
+    y_train,
+    cv=cv,
+    scoring="f1_macro",
+)
+
+print("\n" + "=" * 70)
+print("Cross-validation for final model")
+print("=" * 70)
+print(f"Cross-validation macro F1: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+
+
+# ==============================================================
+# 11. RESULTS SUMMARY
+# ==============================================================
+
+results = pd.DataFrame([
+    {
+        "experiment": "Baseline Random Forest",
+        "features": "Original 6 features",
+        "imbalance_handling": 'class_weight="balanced"',
+        "test_macro_f1": baseline_result["macro_f1"],
+    },
+    {
+        "experiment": "Random Forest + feature engineering",
+        "features": "Original features + 4 engineered features",
+        "imbalance_handling": 'class_weight="balanced"',
+        "test_macro_f1": feature_result["macro_f1"],
+    },
+    {
+        "experiment": "Final model",
+        "features": "Original features + 4 engineered features",
+        "imbalance_handling": 'RandomOverSampler + class_weight="balanced"',
+        "test_macro_f1": final_result["macro_f1"],
+    },
+])
+
+print("\n" + "=" * 70)
+print("Experiment summary")
+print("=" * 70)
+print(results.to_string(index=False))
+
+results.to_csv("results_summary.csv", index=False)
+print("\nResults summary saved as results_summary.csv")
+
+
+# ==============================================================
+# 12. SAVE FINAL CONFUSION MATRIX
+# ==============================================================
+
+save_confusion_matrix(
+    y_test,
+    final_result["y_pred"],
+    filename="confusion_matrix.png",
+)
