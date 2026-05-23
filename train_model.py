@@ -193,6 +193,7 @@ baseline_model = RandomForestClassifier(
     n_estimators=200,
     random_state=RANDOM_STATE,
     class_weight="balanced",
+    n_jobs=-1,
 )
 
 baseline_result = evaluate_model(
@@ -213,6 +214,7 @@ feature_model = RandomForestClassifier(
     n_estimators=200,
     random_state=RANDOM_STATE,
     class_weight="balanced",
+    n_jobs=-1,
 )
 
 feature_result = evaluate_model(
@@ -235,6 +237,7 @@ final_model = Pipeline([
         n_estimators=200,
         random_state=RANDOM_STATE,
         class_weight="balanced",
+        n_jobs=-1,
     )),
 ])
 
