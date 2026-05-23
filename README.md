@@ -26,7 +26,7 @@ python train_model.py
 
 The script prints the classification report, macro F1-score, cross-validation score, and saves the confusion matrix as confusion_matrix.png.
 
-Final result
+## Final result
 
 Final test macro F1-score: 0.6852
 
