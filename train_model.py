@@ -11,6 +11,11 @@ from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val
 from sklearn.preprocessing import LabelEncoder
 
 
+RANDOM_STATE = 42
+
+LABELS = ["No Failure", "HDF", "OSF", "PWF", "TWF", "RNF"]
+
+
 # ==============================================================
 # 1. LOAD DATA
 # ==============================================================
@@ -63,126 +68,250 @@ drop_cols = [
     "fault_type",
 ]
 
-X = df.drop(columns=drop_cols)
+X_original = df.drop(columns=drop_cols)
 y = df["fault_type"]
 
 # Encode Type column: L, M, H -> numbers
 le = LabelEncoder()
-X["Type"] = le.fit_transform(X["Type"])
+X_original["Type"] = le.fit_transform(X_original["Type"])
 
 
 # ==============================================================
 # 4. FEATURE ENGINEERING
 # ==============================================================
 
-X["temperature_difference"] = (
-    X["Process temperature [K]"] - X["Air temperature [K]"]
+X_engineered = X_original.copy()
+
+X_engineered["temperature_difference"] = (
+    X_engineered["Process temperature [K]"] - X_engineered["Air temperature [K]"]
 )
 
-X["power"] = (
-    X["Rotational speed [rpm]"] * X["Torque [Nm]"] * 2 * np.pi / 60
+X_engineered["power"] = (
+    X_engineered["Rotational speed [rpm]"]
+    * X_engineered["Torque [Nm]"]
+    * 2
+    * np.pi
+    / 60
 )
 
-X["wear_torque"] = X["Tool wear [min]"] * X["Torque [Nm]"]
-
-X["temperature_ratio"] = (
-    X["Process temperature [K]"] / X["Air temperature [K]"]
+X_engineered["wear_torque"] = (
+    X_engineered["Tool wear [min]"] * X_engineered["Torque [Nm]"]
 )
 
-print(f"\nFeatures after feature engineering: {X.shape[1]}")
-print(X.head())
+X_engineered["temperature_ratio"] = (
+    X_engineered["Process temperature [K]"] / X_engineered["Air temperature [K]"]
+)
+
+print(f"\nOriginal features: {X_original.shape[1]}")
+print(f"Features after feature engineering: {X_engineered.shape[1]}")
 
 
 # ==============================================================
 # 5. TRAIN/TEST SPLIT
 # ==============================================================
 
-X_train, X_test, y_train, y_test = train_test_split(
-    X,
-    y,
+train_idx, test_idx = train_test_split(
+    df.index,
     test_size=0.2,
-    random_state=42,
+    random_state=RANDOM_STATE,
     stratify=y,
 )
 
-print(f"\nTraining set: {X_train.shape[0]} records")
-print(f"Test set:     {X_test.shape[0]} records")
+X_original_train = X_original.loc[train_idx]
+X_original_test = X_original.loc[test_idx]
+
+X_engineered_train = X_engineered.loc[train_idx]
+X_engineered_test = X_engineered.loc[test_idx]
+
+y_train = y.loc[train_idx]
+y_test = y.loc[test_idx]
+
+print(f"\nTraining set: {len(train_idx)} records")
+print(f"Test set:     {len(test_idx)} records")
+
+print("\nTraining class distribution:")
+print(y_train.value_counts())
+
+print("\nTest class distribution:")
+print(y_test.value_counts())
 
 
 # ==============================================================
-# 6. MODEL PIPELINE
+# 6. HELPER FUNCTIONS
 # ==============================================================
 
-model = Pipeline([
-    ("oversampler", RandomOverSampler(random_state=42)),
+def evaluate_model(name, model, X_train, X_test, y_train, y_test):
+    print("\n" + "=" * 70)
+    print(name)
+    print("=" * 70)
+
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+
+    macro_f1 = f1_score(y_test, y_pred, average="macro")
+
+    print(f"Macro F1-score: {macro_f1:.4f}")
+    print("\nClassification report:")
+    print(classification_report(y_test, y_pred, zero_division=0))
+
+    return {
+        "name": name,
+        "model": model,
+        "y_pred": y_pred,
+        "macro_f1": macro_f1,
+    }
+
+
+def save_confusion_matrix(y_test, y_pred, filename="confusion_matrix.png"):
+    cm = confusion_matrix(y_test, y_pred, labels=LABELS)
+
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=LABELS,
+        yticklabels=LABELS,
+    )
+
+    plt.xlabel("Predicted")
+    plt.ylabel("Actual")
+    plt.title("Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150)
+    plt.close()
+
+    print(f"\nConfusion matrix saved as {filename}")
+
+
+# ==============================================================
+# 7. EXPERIMENT 1: BASELINE RANDOM FOREST
+# ==============================================================
+
+baseline_model = RandomForestClassifier(
+    n_estimators=200,
+    random_state=RANDOM_STATE,
+    class_weight="balanced",
+)
+
+baseline_result = evaluate_model(
+    "Experiment 1: Baseline Random Forest with original features",
+    baseline_model,
+    X_original_train,
+    X_original_test,
+    y_train,
+    y_test,
+)
+
+
+# ==============================================================
+# 8. EXPERIMENT 2: RANDOM FOREST + FEATURE ENGINEERING
+# ==============================================================
+
+feature_model = RandomForestClassifier(
+    n_estimators=200,
+    random_state=RANDOM_STATE,
+    class_weight="balanced",
+)
+
+feature_result = evaluate_model(
+    "Experiment 2: Random Forest with feature engineering",
+    feature_model,
+    X_engineered_train,
+    X_engineered_test,
+    y_train,
+    y_test,
+)
+
+
+# ==============================================================
+# 9. EXPERIMENT 3: FEATURE ENGINEERING + OVERSAMPLING
+# ==============================================================
+
+final_model = Pipeline([
+    ("oversampler", RandomOverSampler(random_state=RANDOM_STATE)),
     ("classifier", RandomForestClassifier(
         n_estimators=200,
-        random_state=42,
+        random_state=RANDOM_STATE,
         class_weight="balanced",
-    ))
+    )),
 ])
+
+final_result = evaluate_model(
+    "Experiment 3: Random Forest with feature engineering and oversampling",
+    final_model,
+    X_engineered_train,
+    X_engineered_test,
+    y_train,
+    y_test,
+)
 
 
 # ==============================================================
-# 7. CROSS-VALIDATION
+# 10. CROSS-VALIDATION FOR FINAL MODEL
 # ==============================================================
 
 cv = StratifiedKFold(
     n_splits=5,
     shuffle=True,
-    random_state=42,
+    random_state=RANDOM_STATE,
 )
 
 cv_scores = cross_val_score(
-    model,
-    X_train,
+    final_model,
+    X_engineered_train,
     y_train,
     cv=cv,
     scoring="f1_macro",
 )
 
-print("\nCross-validation macro F1:")
-print(f"{cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
+print("\n" + "=" * 70)
+print("Cross-validation for final model")
+print("=" * 70)
+print(f"Cross-validation macro F1: {cv_scores.mean():.4f} (+/- {cv_scores.std():.4f})")
 
 
 # ==============================================================
-# 8. FINAL TEST EVALUATION
+# 11. RESULTS SUMMARY
 # ==============================================================
 
-model.fit(X_train, y_train)
+results = pd.DataFrame([
+    {
+        "experiment": "Baseline Random Forest",
+        "features": "Original 6 features",
+        "imbalance_handling": 'class_weight="balanced"',
+        "test_macro_f1": baseline_result["macro_f1"],
+    },
+    {
+        "experiment": "Random Forest + feature engineering",
+        "features": "Original features + 4 engineered features",
+        "imbalance_handling": 'class_weight="balanced"',
+        "test_macro_f1": feature_result["macro_f1"],
+    },
+    {
+        "experiment": "Final model",
+        "features": "Original features + 4 engineered features",
+        "imbalance_handling": 'RandomOverSampler + class_weight="balanced"',
+        "test_macro_f1": final_result["macro_f1"],
+    },
+])
 
-y_pred = model.predict(X_test)
+print("\n" + "=" * 70)
+print("Experiment summary")
+print("=" * 70)
+print(results.to_string(index=False))
 
-macro_f1 = f1_score(y_test, y_pred, average="macro")
+results.to_csv("results_summary.csv", index=False)
+print("\nResults summary saved as results_summary.csv")
 
-print("\nRandom Forest with feature engineering and oversampling")
-print(f"Test macro F1-score: {macro_f1:.4f}")
-print("\nClassification report:")
-print(classification_report(y_test, y_pred, zero_division=0))
 
 # ==============================================================
-# 9. CONFUSION MATRIX
+# 12. SAVE FINAL CONFUSION MATRIX
 # ==============================================================
 
-labels = ["No Failure", "HDF", "OSF", "PWF", "TWF", "RNF"]
-
-cm = confusion_matrix(y_test, y_pred, labels=labels)
-
-plt.figure(figsize=(8, 6))
-sns.heatmap(
-    cm,
-    annot=True,
-    fmt="d",
-    cmap="Blues",
-    xticklabels=labels,
-    yticklabels=labels,
+save_confusion_matrix(
+    y_test,
+    final_result["y_pred"],
+    filename="confusion_matrix.png",
 )
-
-plt.xlabel("Predicted")
-plt.ylabel("Actual")
-plt.title("Confusion Matrix")
-plt.tight_layout()
-plt.savefig("confusion_matrix.png", dpi=150)
-plt.close()
-
-print("\nConfusion matrix saved as confusion_matrix.png")

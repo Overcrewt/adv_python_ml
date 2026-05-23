@@ -27,11 +27,17 @@ These features were added because they have physical meaning. Temperature differ
 
 ## 4. Models and experiments
 
-First, I trained a Random Forest model with class_weight="balanced". This baseline reached macro F1-score of 0.5548.
+I tested the model in three stages. The goal was to start with a simple baseline and then add improvements one by one.
 
-After adding feature engineering, the macro F1-score improved to 0.6516.
+| Experiment | Features | Imbalance handling | Test macro F1 |
+|---|---|---|---|
+| Baseline Random Forest | Original 6 features | class_weight="balanced" | 0.5548 |
+| Random Forest + feature engineering | Original features + 4 engineered physical features | class_weight="balanced" | 0.6516 |
+| Final model | Original features + 4 engineered physical features | RandomOverSampler + class_weight="balanced" | 0.6852 |
 
-Then I added RandomOverSampler to handle class imbalance in the training set. The final model used a pipeline with RandomOverSampler and RandomForestClassifier. This improved the test macro F1-score to 0.6852.
+The baseline model already performed well on the majority class, but the macro F1-score was limited by rare failure types. Adding feature engineering produced the largest improvement. This makes sense because the engineered features describe real physical failure mechanisms: power for PWF, temperature difference for HDF, and wear-torque product for OSF.
+
+Random oversampling gave a smaller additional improvement. It helped the model see rare classes more often during training, but it did not fully solve the problem of extremely rare or random failures.
 
 ## 5. Cross-validation and test result
 
@@ -72,7 +78,17 @@ The confusion matrix shows that the model performs very well on No Failure, HDF,
 
 RNF is especially difficult because it has very few examples and represents random failure. With only 18 records in the full dataset and 4 records in the test split, the model does not have enough training examples to learn this class reliably.
 
-## 8. Reflection
+## 8. Limitations
+
+This model should be treated as an educational predictive maintenance experiment, not as a production-ready maritime safety system.
+
+The main limitation is the extreme class imbalance. The No Failure class dominates the dataset, while TWF and RNF have very few examples. RandomOverSampler helps by duplicating minority class samples in the training set, but it does not create genuinely new information.
+
+RNF is especially difficult because it represents random failure. If the failure is random, there may be no clear sensor pattern for the model to learn. This explains why RNF was not detected in the final test evaluation.
+
+Another limitation is that the dataset is small and synthetic. In a real engine room, sensor noise, maintenance history, operating modes, and equipment-specific thresholds would need to be considered.
+
+## 9. Reflection
 
 The most useful improvement was feature engineering. Adding physically meaningful features improved the macro F1-score more than just using the original dataset columns.
 

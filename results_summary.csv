@@ -1,0 +1,4 @@
+experiment,features,imbalance_handling,test_macro_f1
+Baseline Random Forest,Original 6 features,"class_weight=""balanced""",0.5547614652870383
+Random Forest + feature engineering,Original features + 4 engineered features,"class_weight=""balanced""",0.6515843114105145
+Final model,Original features + 4 engineered features,"RandomOverSampler + class_weight=""balanced""",0.6852404337284151
