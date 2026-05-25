@@ -8,7 +8,7 @@
 
 **Date:** 25.05.2026
 
-Repository link: [Local Workspace Repository]
+Repository link: https://github.com/Overcrewt/adv_python_ml
 
 ---
 
