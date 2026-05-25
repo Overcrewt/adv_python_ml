@@ -28,6 +28,11 @@ The script prints the classification report, macro F1-score, cross-validation sc
 
 ## Final result
 
-Final test macro F1-score: 0.6852
+### Danila's Model (Random Forest + RandomOverSampler)
+- **Holdout Test Macro F1**: 0.6852
+- **Cross-Validation Macro F1**: 0.6341 (+/- 0.0116)
 
-Cross-validation macro F1-score: 0.6330 (+/- 0.0129)
+### Dmitri's Model (LightGBM + SMOTE + Rule-based Features)
+- **Holdout Test Macro F1**: **0.7036** (Successfully exceeds 0.70 threshold)
+- **Cross-Validation Macro F1**: **0.6757** (+/- 0.0123)
+
